@@ -42,6 +42,7 @@ def parse_comments(comments):
             "comment_datetime": datetime.fromtimestamp(float(comment['ts'])),
         }
         image_urls = []
+        video_urls = []
         
         # attachments
         if attachments := comment.get('attachments'):
@@ -59,8 +60,14 @@ def parse_comments(comments):
                     if mimetype.startswith('image'):
                         image_url = file['url_private']
                         image_urls.append(image_url)
+                    
+                    # video url
+                    elif mimetype.startswith('video'):
+                        video_url = file['url_private']
+                        video_urls.append(video_url)
         
         parsed_comment['image_urls'] = image_urls
+        parsed_comment['video_urls'] = video_urls
         result.append(parsed_comment)
     
     return result

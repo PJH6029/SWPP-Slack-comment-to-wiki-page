@@ -4,6 +4,7 @@ import mimetypes
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 from google.oauth2 import service_account
+from wasabi import msg
 
 from dotenv import load_dotenv
 from utils import *
@@ -63,7 +64,7 @@ def download_image(image_url):
     if response.status_code == 200:
         return response.content
     else:
-        print(f"Failed to download image: {image_url}")
+        msg.fail(f"[drive.py] Failed to download image: {image_url}")
         return None
 
 def donwload_image_to_local(image_url, image_path, tmp_dir="tmp"):
@@ -79,13 +80,81 @@ def donwload_image_to_local(image_url, image_path, tmp_dir="tmp"):
             f.write(response.content)
         return os.path.join(tmp_dir, image_path)
     else:
-        print(f"Failed to download image: {image_url}")
+        msg.fail(f"[drive.py] Failed to download image: {image_url}")
         return None
+
+def download_video(video_url):
+    response = requests.get(
+        video_url,
+        headers={"Authorization": f"Bearer {os.getenv('SLACK_BOT_TOKEN')}"},
+        stream=True
+    )
+    if response.status_code == 200:
+        return response.content
+    else:
+        msg.fail(f"[drive.py] Failed to download video: {video_url}, Status Code: {response.status_code}")
+        return None
+
+def download_video_to_local(video_url, video_path, tmp_dir="tmp"):
+    response = requests.get(
+        video_url,
+        headers={"Authorization": f"Bearer {os.getenv('SLACK_BOT_TOKEN')}"},
+        stream=True
+    )
+    if response.status_code == 200:
+        if not os.path.exists(tmp_dir):
+            os.makedirs(tmp_dir)
+        
+        with open(os.path.join(tmp_dir, video_path), "wb") as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                f.write(chunk)
+        return os.path.join(tmp_dir, video_path)
+    else:
+        msg.fail(f"[drive.py] Failed to download video: {video_url}, Status Code: {response.status_code}")
+        return None
+
+def upload_file(drive_service, file_path, folder_id):
+    if not drive_service:
+        msg.fail("[drive.py] Failed to build drive service")
+        return
+    
+    file_metadata = {
+        "name": os.path.basename(file_path),
+        "parents": [folder_id]
+    }
+    media = MediaFileUpload(file_path, resumable=True)
+    
+    file = drive_service.files().create(
+        body=file_metadata,
+        media_body=media,
+        fields="id",
+        supportsAllDrives=True
+    ).execute()
+    
+    return file.get("id")
+
+def create_shareable_link(drive_service, file_id):
+    drive_service.permissions().create(
+        fileId=file_id,
+        body={"role": "reader", "type": "anyone"},
+        fields="id",
+    ).execute()
+    
+    file = drive_service.files().get(
+        fileId=file_id,
+        fields="webViewLink"
+    ).execute()
+    return file.get("webViewLink")
+
+def generate_filename_from_url(url):
+    filename = os.path.basename(url)
+    filename_without_ext, ext = os.path.splitext(filename)
+    return f"{filename_without_ext}_{uuid.uuid4().hex[:6]}{ext}" # add random string to avoid duplication
 
 def upload_from_comment(comment, tmp_dir="tmp"):
     drive_service = build_drive_service()
     if not drive_service:
-        print("Failed to build drive service")
+        msg.fail("[drive.py] Failed to build drive service")
         return
     tmp_files = []
     
@@ -109,68 +178,41 @@ def upload_from_comment(comment, tmp_dir="tmp"):
             json.dump(json_data, f, indent=4, ensure_ascii=False)
             
         # upload the json file
-        file_metadata = {
-            "name": json_file_name,
-            "parents": [folder_id]
-        }
-        media = MediaFileUpload(tmp_json_path, resumable=True, mimetype="application/json")
+        file_id = upload_file(drive_service, tmp_json_path, folder_id)
         
-        file = drive_service.files().create(
-            body=file_metadata,
-            media_body=media,
-            fields="id",
-            supportsAllDrives=True
-        ).execute()
-        
-        print(f"Uploaded {json_file_name} to {full_path}. File ID: {file.get('id')}")
+        msg.good(f"[drive.py] Uploaded json {json_file_name} to {full_path}. File ID: {file_id}")
     
     
     # upload image
     image_urls = comment.get('image_urls', [])
     for image_url in image_urls:
         # download the image
-        image_filename = os.path.basename(image_url)
-        imag_filename_without_ext, ext = os.path.splitext(image_filename)
-        image_filename = f"{imag_filename_without_ext}_{uuid.uuid4().hex[:6]}{ext}" # add random string to avoid duplication
+        image_filename = generate_filename_from_url(image_url)
+        
         tmp_image_path = donwload_image_to_local(image_url, image_filename, tmp_dir)
         if not tmp_image_path:
             continue
         tmp_files.append(tmp_image_path)
         
-        mime_type, _ = mimetypes.guess_type(tmp_image_path)
-        if mime_type is None:
-            print(f"Unsuppored file type: {tmp_image_path}")
+        file_id = upload_file(drive_service, tmp_image_path, folder_id)
+        
+        msg.good(f"[drive.py] Uploaded image {image_filename} to {full_path}. File ID: {file_id}")
+    
+    # upload video
+    video_urls = comment.get('video_urls', [])
+    for video_url in video_urls:
+        # download the video
+        video_filename = generate_filename_from_url(video_url)
+        
+        tmp_video_path = download_video_to_local(video_url, video_filename, tmp_dir)
+        if not tmp_video_path:
             continue
+        tmp_files.append(tmp_video_path)
         
-        file_metadata = {
-            "name": image_filename,
-            "parents": [folder_id]
-        }
-        media = MediaFileUpload(str(tmp_image_path).replace("\\", "/"), resumable=True, mimetype=mime_type)
-
-        file = drive_service.files().create(
-            body=file_metadata,
-            media_body=media,
-            fields="id",
-            supportsAllDrives=True
-        ).execute()
+        file_id = upload_file(drive_service, tmp_video_path, folder_id)
         
-        print(f"Uploaded {image_filename} to {full_path}. File ID: {file.get('id')}")
+        msg.good(f"[drive.py] Uploaded video {video_filename} to {full_path}. File ID: {file_id}")
         
     # share the folder
     shareable_link = create_shareable_link(drive_service, folder_id)
     comment["share_link"] = shareable_link
-
-
-def create_shareable_link(drive_service, file_id):
-    drive_service.permissions().create(
-        fileId=file_id,
-        body={"role": "reader", "type": "anyone"},
-        fields="id",
-    ).execute()
-    
-    file = drive_service.files().get(
-        fileId=file_id,
-        fields="webViewLink"
-    ).execute()
-    return file.get("webViewLink")
