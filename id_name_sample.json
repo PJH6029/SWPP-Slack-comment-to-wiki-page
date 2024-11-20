@@ -1,12 +1,12 @@
 {
     "U07-------": {
         "id": "U07-------",
-        "initial": "ABC",
+        "initials": "ABC",
         "name": "홍길동"
     },
     "U08-------": {
         "id": "U08-------",
-        "initial": "DEF",
+        "initials": "DEF",
         "name": "김철수"
     }
 }
